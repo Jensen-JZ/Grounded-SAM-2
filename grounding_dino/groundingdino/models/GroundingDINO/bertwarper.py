@@ -26,7 +26,14 @@ class BertModelWarper(nn.Module):
 
         self.get_extended_attention_mask = bert_model.get_extended_attention_mask
         self.invert_attention_mask = bert_model.invert_attention_mask
-        self.get_head_mask = bert_model.get_head_mask
+        # get_head_mask was removed in transformers 4.x, implement it manually
+        if hasattr(bert_model, 'get_head_mask'):
+            self.get_head_mask = bert_model.get_head_mask
+        else:
+            # Fallback implementation for newer transformers
+            self.get_head_mask = lambda head_mask, num_layers, is_attention_chunked=False: (
+                head_mask if head_mask is not None else [None] * num_layers
+            )
 
     def forward(
         self,
@@ -106,9 +113,20 @@ class BertModelWarper(nn.Module):
 
         # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
         # ourselves in which case we just need to make it broadcastable to all heads.
-        extended_attention_mask: torch.Tensor = self.get_extended_attention_mask(
-            attention_mask, input_shape, device
-        )
+        # Note: transformers 5.0+ changed the signature from (mask, shape, device) to (mask, shape, dtype)
+        import inspect
+        sig = inspect.signature(self.get_extended_attention_mask)
+        params = list(sig.parameters.keys())
+        if len(params) >= 3 and params[2] == 'dtype':
+            # transformers 5.0+ API
+            extended_attention_mask: torch.Tensor = self.get_extended_attention_mask(
+                attention_mask, input_shape, dtype=self.embeddings.word_embeddings.weight.dtype
+            )
+        else:
+            # transformers 4.x API
+            extended_attention_mask: torch.Tensor = self.get_extended_attention_mask(
+                attention_mask, input_shape, device
+            )
 
         # If a 2D or 3D attention mask is provided for the cross-attention
         # we need to make broadcastable to [batch_size, num_heads, seq_length, seq_length]
